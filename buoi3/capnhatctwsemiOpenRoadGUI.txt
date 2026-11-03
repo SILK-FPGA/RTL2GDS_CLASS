@@ -1,0 +1,79 @@
+bash <<'CTW_GUI_SETUP'
+set -e
+
+CTW_DATA_DIR="$HOME/ctwsemi-data"
+CTW_DISPLAY="${DISPLAY:-}"
+CTW_OLD="ctwsemi-before-gui-$(date +%Y%m%d-%H%M%S)"
+
+if ! docker container inspect ctwsemi >/dev/null 2>&1; then
+    echo "LỖI: Không tìm thấy container tên ctwsemi."
+    exit 1
+fi
+
+if [ -z "$CTW_DISPLAY" ]; then
+    echo "LỖI: DISPLAY đang trống. Hãy chạy trong phiên Ubuntu Desktop hoặc WSL2 có WSLg."
+    exit 1
+fi
+
+if [ ! -d /tmp/.X11-unix ]; then
+    echo "LỖI: Không tìm thấy /tmp/.X11-unix. X11/WSLg chưa hoạt động."
+    exit 1
+fi
+
+CTW_IMAGE="$(docker inspect ctwsemi --format '{{.Config.Image}}')"
+DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+
+if ! command -v xhost >/dev/null 2>&1; then
+    echo "Đang cài công cụ X11..."
+    sudo apt-get update
+    sudo apt-get install -y x11-xserver-utils libgl1 libgl1-mesa-dri libegl1
+fi
+
+mkdir -p "$CTW_DATA_DIR/work" "$CTW_DATA_DIR/.lanex"
+
+xhost +SI:localuser:root >/dev/null
+xhost +SI:localuser:"$(id -un)" >/dev/null
+
+echo "Image:   $CTW_IMAGE"
+echo "Display: $CTW_DISPLAY"
+echo "Data:    $CTW_DATA_DIR"
+
+docker stop ctwsemi >/dev/null
+docker rename ctwsemi "$CTW_OLD"
+
+if ! docker run -d \
+    --name ctwsemi \
+    --restart unless-stopped \
+    --user "$(id -u):$(id -g)" \
+    --group-add "$DOCKER_GID" \
+    -p 127.0.0.1:8765:8765 \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$CTW_DATA_DIR:$CTW_DATA_DIR" \
+    -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+    -e DISPLAY="$CTW_DISPLAY" \
+    -e QT_X11_NO_MITSHM=1 \
+    -e LIBGL_ALWAYS_SOFTWARE=1 \
+    -e HOME="$CTW_DATA_DIR" \
+    -e LANEX_HOME="$CTW_DATA_DIR/.lanex" \
+    "$CTW_IMAGE"
+then
+    echo "Tạo container mới thất bại — đang khôi phục container cũ."
+    docker rename "$CTW_OLD" ctwsemi
+    docker start ctwsemi
+    exit 1
+fi
+
+sleep 2
+
+docker exec ctwsemi sh -lc '
+echo "Container DISPLAY=$DISPLAY"
+test -d /tmp/.X11-unix
+echo "X11 socket OK"
+'
+
+echo
+echo "CTW SEMI đã sẵn sàng."
+echo "Container cũ được giữ tại: $CTW_OLD"
+echo "Mở trình duyệt: http://127.0.0.1:8765"
+echo "Mở thiết kế: Runs → chọn run → Layout → OpenROAD GUI"
+CTW_GUI_SETUP
